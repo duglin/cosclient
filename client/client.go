@@ -18,6 +18,7 @@ import (
 )
 
 var verbose = 1
+var refreshTime = time.Minute * 5
 
 func Debug(level int, format string, args ...interface{}) {
 	if level > verbose {
@@ -27,9 +28,13 @@ func Debug(level int, format string, args ...interface{}) {
 }
 
 type COSClient struct {
-	Endpoint string
-	Token    string
-	ID       string
+	APIKey      string
+	IAMEndpoint string
+	Endpoint    string
+	ID          string
+
+	Token   string
+	Expires time.Time
 }
 
 type BucketMetadata struct {
@@ -103,16 +108,34 @@ type ObjectListResponse struct {
 // https://cloud.ibm.com/docs/services/cloud-object-storage?topic=cloud-object-storage-compatibility-api-bucket-operations#compatibility-api-new-bucket
 
 func NewClient(apikey, iam_endpoint, endpoint, id string) (*COSClient, error) {
-	iam_endpoint = strings.TrimRight(iam_endpoint, "/")
-	endpoint = strings.TrimRight(endpoint, "/")
 
-	bodyStr := "apikey=" + url.PathEscape(apikey) + "&" +
+	client := &COSClient{
+		APIKey:      apikey,
+		IAMEndpoint: strings.TrimRight(iam_endpoint, "/"),
+		Endpoint:    strings.TrimRight(endpoint, "/"),
+		ID:          id,
+
+		Token:   "",
+		Expires: time.Time{},
+	}
+
+	if err := client.Refresh(); err != nil {
+		return nil, err
+	}
+
+	return client, nil
+}
+
+func (client *COSClient) Refresh() error {
+	log.Printf("Refreshing COS token")
+	bodyStr := "apikey=" + url.PathEscape(client.APIKey) + "&" +
 		"response_type=cloud_iam&" +
 		"grant_type=urn:ibm:params:oauth:grant-type:apikey"
 
-	req, err := http.NewRequest("POST", iam_endpoint, strings.NewReader(bodyStr))
+	req, err := http.NewRequest("POST", client.IAMEndpoint,
+		strings.NewReader(bodyStr))
 	if err != nil {
-		return nil, fmt.Errorf("Error creating HTTP client: %s", err)
+		return fmt.Errorf("Error creating HTTP client: %s", err)
 	}
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
@@ -122,39 +145,46 @@ func NewClient(apikey, iam_endpoint, endpoint, id string) (*COSClient, error) {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
-	client := &http.Client{Transport: tr}
-	res, err := client.Do(req)
+	httpClient := &http.Client{Transport: tr}
+	res, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Error getting IAM token: %s", err)
+		return fmt.Errorf("Error getting IAM token: %s", err)
 	}
 
-	defer client.CloseIdleConnections()
+	defer httpClient.CloseIdleConnections()
 	defer res.Body.Close()
 	body, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return nil, fmt.Errorf("Error http response: %s", err)
+		return fmt.Errorf("Error http response: %s", err)
 	}
 
-	data := map[string]interface{}{}
+	data := struct {
+		Access_token  string
+		Expiration    int64
+		expires_in    int
+		Refresh_token string
+		Scope         string
+		Token_type    string
+	}{}
+
 	err = json.Unmarshal(body, &data)
 	if err != nil {
-		return nil, fmt.Errorf("Error parsing response: %s\n%s",
+		return fmt.Errorf("Error parsing response: %s\n%s",
 			err, string(body))
 	}
 
-	token, ok := data["access_token"].(string)
-	if !ok {
-		return nil, fmt.Errorf("Error parsing token: %q", data) //["access_token"])
-	}
+	client.Token = data.Access_token
+	client.Expires = time.Unix(data.Expiration, 0)
 
-	return &COSClient{
-		Endpoint: endpoint,
-		Token:    token,
-		ID:       id,
-	}, nil
+	return nil
 }
 
 func (client *COSClient) doHTTP(method string, path string, body []byte, num int, headers map[string]string) ([]byte, error) {
+
+	if time.Now().Add(refreshTime).After(client.Expires) {
+		client.Refresh()
+	}
+
 	reader := bytes.NewReader(body)
 	req, err := http.NewRequest(method, path, reader)
 	if err != nil {
@@ -316,7 +346,6 @@ func (client *COSClient) DeleteBucketContents(name string) error {
 		go func(objects []string, pErr *error) {
 			defer atomic.AddInt32(&count, -1)
 
-			fmt.Printf("deleting %d objects\n", len(objects))
 			err := client.DeleteObjects(name, objects)
 			if err != nil {
 				*pErr = fmt.Errorf("Error deleting bucket contents: %s", resErr)
