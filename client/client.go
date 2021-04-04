@@ -30,11 +30,12 @@ func Debug(level int, format string, args ...interface{}) {
 type COSClient struct {
 	APIKey      string
 	IAMEndpoint string
-	Endpoint    string
 	ID          string
 
 	Token   string
 	Expires time.Time
+
+	Endpoints map[string]string // BucketName -> URL
 }
 
 type BucketMetadata struct {
@@ -107,12 +108,18 @@ type ObjectListResponse struct {
 // https://cloud.ibm.com/docs/cloud-object-storage?topic=cloud-object-storage-curl
 // https://cloud.ibm.com/docs/services/cloud-object-storage?topic=cloud-object-storage-compatibility-api-bucket-operations#compatibility-api-new-bucket
 
-func NewClient(apikey, iam_endpoint, endpoint, id string) (*COSClient, error) {
+func NewClient(apikey, id string) (*COSClient, error) {
+	if apikey == "" {
+		return nil, fmt.Errorf("Missing APIKey")
+	}
+
+	if id == "" {
+		return nil, fmt.Errorf("Missing COS Instance ID")
+	}
 
 	client := &COSClient{
 		APIKey:      apikey,
-		IAMEndpoint: strings.TrimRight(iam_endpoint, "/"),
-		Endpoint:    strings.TrimRight(endpoint, "/"),
+		IAMEndpoint: "https://iam.cloud.ibm.com/identity/token",
 		ID:          id,
 
 		Token:   "",
@@ -165,12 +172,18 @@ func (client *COSClient) Refresh() error {
 		Refresh_token string
 		Scope         string
 		Token_type    string
+		// or...
+		ErrorMessage string
 	}{}
 
 	err = json.Unmarshal(body, &data)
 	if err != nil {
 		return fmt.Errorf("Error parsing response: %s\n%s",
 			err, string(body))
+	}
+
+	if data.ErrorMessage != "" {
+		return fmt.Errorf(data.ErrorMessage)
 	}
 
 	client.Token = data.Access_token
@@ -201,7 +214,7 @@ func (client *COSClient) doHTTP(method string, path string, body []byte, num int
 
 	if num > 1 {
 		req.Header.Add("ibm-service-instance-id", client.ID)
-		Debug(2, "SVC-ID: %s\n", req.Header.Get("ibm-service-instance-id")[:15])
+		Debug(2, "SVC-ID: %s\n", client.ID[:15])
 	}
 
 	for k, v := range headers {
@@ -238,18 +251,55 @@ func (client *COSClient) doHTTP(method string, path string, body []byte, num int
 	return body, nil
 }
 
-func (client *COSClient) CreateBucket(name string) error {
-	path := fmt.Sprintf("%s/%s", client.Endpoint, name)
+func (client *COSClient) CreateBucket(name, daType, reg string) error {
+	//                   type       reg        scope      name   url
+	//                 cross-region us         public     us-geo s3.us...
+	endpoints, err := GetCOSEndpoints()
+	if err != nil {
+		return err
+	}
 
-	_, err := client.doHTTP("PUT", path, nil, 2, nil)
-	return err
+	daTypes := endpoints.ServiceEndpoints[daType]
+	if daTypes == nil {
+		values := []string{}
+		for key, _ := range endpoints.ServiceEndpoints {
+			values = append(values, key)
+		}
+		return fmt.Errorf("Unknown type of region %q (can be: %s)", daType,
+			strings.Join(values, ","))
+	}
+
+	region := daTypes[reg]
+	if region == nil {
+		values := []string{}
+		for key, _ := range daTypes {
+			values = append(values, key)
+		}
+		return fmt.Errorf("Unknown region %q (can be: %s)", reg,
+			strings.Join(values, ","))
+	}
+
+	nameMap := region["public"]
+	for _, endpoint := range nameMap {
+		path := fmt.Sprintf("https://%s/%s", endpoint, name)
+
+		_, err := client.doHTTP("PUT", path, nil, 2, nil)
+		return err
+	}
+
+	return fmt.Errorf("Can't find endpoint for %s/%s region", daType, reg)
 }
 
 func (client *COSClient) GetBucketMetadata(name string) (*BucketMetadata, error) {
 	// {"name":"customers","service_instance_id":"ad58e4cf-c3f4-49b8-b34a-70a15a416c58","time_created":"2020-04-26T13:36:44.663Z","time_updated":"2020-04-27T01:34:14.856Z","object_count":1847,"bytes_used":82860,"crn":"crn:v1:staging:public:cloud-object-storage:global:a/80368303fa866f52abd5c0e96e771db3:ad58e4cf-c3f4-49b8-b34a-70a15a416c58:bucket:customers","service_instance_crn":"crn:v1:staging:public:cloud-object-storage:global:a/80368303fa866f52abd5c0e96e771db3:ad58e4cf-c3f4-49b8-b34a-70a15a416c58::"}
 
+	svcURL, err := client.GetEndpointForBucket(name)
+	if err != nil {
+		return nil, err
+	}
+
 	test := ""
-	if strings.Index(client.Endpoint, ".test.") > 0 {
+	if strings.Index(svcURL, ".test.") > 0 {
 		test = "test."
 	}
 	path := fmt.Sprintf("https://config.cloud-object-storage.%scloud.ibm.com/v1/b/%s", test, name)
@@ -268,8 +318,126 @@ func (client *COSClient) GetBucketMetadata(name string) (*BucketMetadata, error)
 	return &res, nil
 }
 
+type COSEndpoints struct {
+	IdentityEndpoints struct {
+		IAMToken  string `json:"iam-token"`
+		IAMPolicy string `json:"iam-policy"`
+	} `json:"identity-endpoints"`
+	ServiceEndpoints map[string]map[string]map[string]map[string]string `json:"service-endpoints"`
+	//                   type       reg        scope      name   url
+	//                 cross-region us         public     us-geo s3.us...
+	//                 regional     us-south   private    us-south s3...
+	//                 single-site  hkg02      direct     hkg02  s3...
+}
+
+var Endpoints = (*COSEndpoints)(nil)
+
+func GetCOSEndpoints() (*COSEndpoints, error) {
+	Debug(2, "In GetCOSEndpoints\n")
+	if Endpoints != nil {
+		return Endpoints, nil
+	}
+
+	path := "https://control.cloud-object-storage.cloud.ibm.com/v2/endpoints"
+	req, err := http.NewRequest("GET", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Creating HTTP client: %s", err)
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	Debug(2, "PATH: %s\n", path)
+	Debug(2, "METHOD: GET\n")
+
+	cli := &http.Client{Transport: tr}
+	res, err := cli.Do(req)
+	if err != nil {
+		Debug(2, "ERR: %s\n", err)
+		return nil, fmt.Errorf("%s", err)
+	}
+
+	defer res.Body.Close()
+	buf, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("Error reading endpoints: %s", err)
+	}
+	err = json.Unmarshal(buf, &Endpoints)
+	if err != nil {
+		err = fmt.Errorf("Error parsing endpoints: %s", err)
+		Debug(2, "ERR: %s\n", err)
+		return nil, err
+	}
+	return Endpoints, nil
+}
+
+func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
+	// cross:  ap-smart
+	// cross:  us-standard
+	// reg  :  eu-de-standard
+	// reg  :  us-south-smart
+
+	Debug(2, "Getting endpoints for bucket %q\n", name)
+	if url, ok := client.Endpoints[name]; ok {
+		Debug(2, "  -> %s\n", url)
+		return url, nil
+	}
+
+	endpoints, err := GetCOSEndpoints()
+	if err != nil {
+		return "", err
+	}
+
+	list, err := client.ListBuckets()
+	if err != nil {
+		return "", err
+	}
+
+	for _, bucket := range list.Buckets {
+		if bucket.Name != name {
+			continue
+		}
+
+		// Found it
+		loc := bucket.LocationConstraint
+		//                   type       reg        scope      name   url
+		//                 cross-region us         public     us-geo s3.us...
+		//                 regional     us-south   private    us-south s3...
+		//                 single-site  hkg02      direct     hkg02  s3...
+
+		parts := strings.Split(loc, "-")
+		daType := ""
+		reg := ""
+		if len(parts) == 2 {
+			daType = "cross-region"
+			reg = parts[0]
+		} else if len(parts) == 3 {
+			daType = "regional"
+			reg = parts[0] + "-" + parts[1]
+		} else {
+			return "", fmt.Errorf("Can't split loc: %s", loc)
+		}
+
+		names := endpoints.ServiceEndpoints[daType][reg]["public"]
+		for name, url := range names {
+			url := "https://" + url
+
+			if client.Endpoints == nil {
+				client.Endpoints = map[string]string{}
+			}
+			client.Endpoints[name] = url
+			return url, nil
+		}
+	}
+
+	err = fmt.Errorf("Can't find bucket: %s", name)
+	Debug(2, "ERR: %s\n", err)
+	return "", err
+}
+
 func (client *COSClient) ListBuckets() (*BucketList, error) {
-	path := fmt.Sprintf("%s?extended", client.Endpoint)
+	path := fmt.Sprintf("%s?extended", "https://s3.us.cloud-object-storage.appdomain.cloud")
 
 	body, err := client.doHTTP("GET", path, nil, 2, nil)
 	if err != nil {
@@ -296,14 +464,23 @@ func (client *COSClient) ListBuckets() (*BucketList, error) {
 }
 
 func (client *COSClient) DeleteBucket(name string) error {
-	path := fmt.Sprintf("%s/%s", client.Endpoint, name)
+	svcURL, err := client.GetEndpointForBucket(name)
+	if err != nil {
+		return err
+	}
 
-	_, err := client.doHTTP("DELETE", path, nil, 1, nil)
+	path := fmt.Sprintf("%s/%s", svcURL, name)
+
+	_, err = client.doHTTP("DELETE", path, nil, 1, nil)
 	return err
 }
 
 func (client *COSClient) GetBucketLocation(name string) (string, error) {
-	path := fmt.Sprintf("%s/%s?location", client.Endpoint, name)
+	svcURL, err := client.GetEndpointForBucket(name)
+	if err != nil {
+		return "", err
+	}
+	path := fmt.Sprintf("%s/%s?location", svcURL, name)
 
 	body, err := client.doHTTP("GET", path, nil, 1, nil)
 	return string(body), err
@@ -373,7 +550,7 @@ func (client *COSClient) BucketExists(name string) bool {
 	// https://config.cloud-object-storage.cloud.ibm.com/v1/b/
 
 	// path := "https://config.cloud-object-storage.cloud.ibm.com/v1/b/" + name
-	path := fmt.Sprintf("%s/%s", client.Endpoint, name)
+	path := fmt.Sprintf("%s/%s", "https://s3.us.cloud-object-storage.appdomain.cloud", name)
 	_, err := client.doHTTP("HEAD", path, nil, 1, nil)
 	return err == nil
 }
@@ -385,9 +562,14 @@ func (client *COSClient) ListObjects(bucket string) (ObjectList, error) {
 	contToken := ""
 	res := ObjectList{}
 
+	svcURL, err := client.GetEndpointForBucket(bucket)
+	if err != nil {
+		return nil, err
+	}
+
 	for {
-		// path := fmt.Sprintf("%s/%s?list-type=2", client.Endpoint, bucket)
-		path := fmt.Sprintf("%s/%s?extended", client.Endpoint, bucket)
+		// path := fmt.Sprintf("%s/%s?list-type=2", svcURL, bucket)
+		path := fmt.Sprintf("%s/%s?extended", svcURL, bucket)
 		if contToken != "" {
 			path += "&continuation-token=" + contToken
 			contToken = ""
@@ -423,23 +605,41 @@ func (client *COSClient) ListObjects(bucket string) (ObjectList, error) {
 
 func (client *COSClient) UploadObject(bucket, name string, data []byte) error {
 	// PUT /bucket/file
-	path := fmt.Sprintf("%s/%s/%s", client.Endpoint, bucket, name)
 
-	_, err := client.doHTTP("PUT", path, data, 1, nil)
+	svcURL, err := client.GetEndpointForBucket(bucket)
+	if err != nil {
+		return err
+	}
+
+	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
+
+	_, err = client.doHTTP("PUT", path, data, 1, nil)
 	return err
 }
 
 func (client *COSClient) DeleteObject(bucket, name string) error {
 	// DELETE /bucket/file
-	path := fmt.Sprintf("%s/%s/%s", client.Endpoint, bucket, name)
 
-	_, err := client.doHTTP("DELETE", path, nil, 1, nil)
+	svcURL, err := client.GetEndpointForBucket(bucket)
+	if err != nil {
+		return err
+	}
+
+	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
+
+	_, err = client.doHTTP("DELETE", path, nil, 1, nil)
 	return err
 }
 
 func (client *COSClient) DeleteObjects(bucket string, names []string) error {
 	// DELETE /bucket/file
-	path := fmt.Sprintf("%s/%s?delete", client.Endpoint, bucket)
+
+	svcURL, err := client.GetEndpointForBucket(bucket)
+	if err != nil {
+		return err
+	}
+
+	path := fmt.Sprintf("%s/%s?delete", svcURL, bucket)
 
 	body := "<Delete>"
 	for _, name := range names {
@@ -452,13 +652,19 @@ func (client *COSClient) DeleteObjects(bucket string, names []string) error {
 	headers := map[string]string{}
 	headers["Content-MD5"] = base64.StdEncoding.EncodeToString(sum[:])
 
-	_, err := client.doHTTP("POST", path, []byte(body), 1, headers)
+	_, err = client.doHTTP("POST", path, []byte(body), 1, headers)
 	return err
 }
 
 func (client *COSClient) DownloadObject(bucket, name string) ([]byte, error) {
 	// GET /bucket/file
-	path := fmt.Sprintf("%s/%s/%s", client.Endpoint, bucket, name)
+
+	svcURL, err := client.GetEndpointForBucket(bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
 
 	data, err := client.doHTTP("GET", path, nil, 1, nil)
 	return data, err
