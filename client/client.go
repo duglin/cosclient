@@ -149,7 +149,7 @@ func (client *COSClient) Refresh() error {
 	req.Close = true
 
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		// TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
 	httpClient := &http.Client{Transport: tr}
@@ -379,9 +379,11 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	// reg  :  us-south-smart
 
 	Debug(2, "Getting endpoints for bucket %q\n", name)
-	if url, ok := client.Endpoints[name]; ok {
-		Debug(2, "  -> %s\n", url)
-		return url, nil
+	if client.Endpoints != nil {
+		if url, ok := client.Endpoints[name]; ok {
+			Debug(2, "  -> %s\n", url)
+			return url, nil
+		}
 	}
 
 	endpoints, err := GetCOSEndpoints()
