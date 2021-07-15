@@ -126,9 +126,9 @@ func NewClient(apikey, id string) (*COSClient, error) {
 		Expires: time.Time{},
 	}
 
-	if err := client.Refresh(); err != nil {
-		return nil, err
-	}
+	// if err := client.Refresh(); err != nil {
+	// return nil, err
+	// }
 
 	return client, nil
 }
