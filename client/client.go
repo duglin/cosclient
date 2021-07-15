@@ -149,7 +149,7 @@ func (client *COSClient) Refresh() error {
 	req.Close = true
 
 	tr := &http.Transport{
-		// TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
 	httpClient := &http.Client{Transport: tr}
