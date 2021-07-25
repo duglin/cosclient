@@ -219,6 +219,7 @@ func (client *COSClient) doHTTP(method string, path string, body []byte, num int
 
 	for k, v := range headers {
 		req.Header.Add(k, v)
+		Debug(2, "HEADER: %s: %s\n", k, v)
 	}
 
 	tr := &http.Transport{
@@ -369,7 +370,13 @@ func GetCOSEndpoints() (*COSEndpoints, error) {
 		Debug(2, "ERR: %s\n", err)
 		return nil, err
 	}
+	Debug(2, ToJsonString(Endpoints))
 	return Endpoints, nil
+}
+
+func ToJsonString(obj interface{}) string {
+	buf, _ := json.MarshalIndent(obj, "", "  ")
+	return string(buf)
 }
 
 func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
@@ -397,9 +404,12 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	}
 
 	for _, bucket := range list.Buckets {
+		Debug(2, "Compare: %q vs %q", name, bucket.Name)
 		if bucket.Name != name {
 			continue
 		}
+		Debug(2, "Found it")
+		Debug(2, "Bucket info:\n%s\n", ToJsonString(bucket))
 
 		// Found it
 		loc := bucket.LocationConstraint
@@ -414,14 +424,25 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 		if len(parts) == 2 {
 			daType = "cross-region"
 			reg = parts[0]
+
+			Debug(2, "Reg: %s", reg)
+			for siteName, _ := range endpoints.ServiceEndpoints["single-site"] {
+				if siteName == reg {
+					daType = "single-site"
+					break
+				}
+			}
 		} else if len(parts) == 3 {
 			daType = "regional"
 			reg = parts[0] + "-" + parts[1]
 		} else {
 			return "", fmt.Errorf("Can't split loc: %s", loc)
 		}
+		Debug(2, "type: %s", daType)
+		Debug(2, "reg: %s", reg)
 
 		names := endpoints.ServiceEndpoints[daType][reg]["public"]
+		Debug(2, "Svc Endpoints: %v", names)
 		for name, url := range names {
 			url := "https://" + url
 
@@ -431,6 +452,10 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 			client.Endpoints[name] = url
 			return url, nil
 		}
+
+		// Debug(2, "Svc Endpoints: %#v", endpoints.ServiceEndpoints)
+		err = fmt.Errorf("Can't find endpoint for bucket: %s", name)
+		return "", err
 	}
 
 	err = fmt.Errorf("Can't find bucket: %s", name)
@@ -670,4 +695,24 @@ func (client *COSClient) DownloadObject(bucket, name string) ([]byte, error) {
 
 	data, err := client.doHTTP("GET", path, nil, 1, nil)
 	return data, err
+}
+
+func (client *COSClient) CopyObject(srcBucket, srcName, tgtBucket, tgtName string) error {
+	svcURL, err := client.GetEndpointForBucket(tgtBucket)
+	if err != nil {
+		return err
+	}
+
+	URL, _ := url.Parse(svcURL)
+	URL.Host = tgtBucket + "." + URL.Host
+	svcURL = URL.String()
+
+	path := fmt.Sprintf("%s/%s", svcURL, tgtName)
+	headers := map[string]string{
+		"X-Amz-Copy-Source":       fmt.Sprintf("/%s/%s", srcBucket, srcName),
+		"Ibm-Service-Instance-Id": client.ID,
+	}
+
+	_, err = client.doHTTP("PUT", path, nil, 1, headers)
+	return err
 }
