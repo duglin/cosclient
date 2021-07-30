@@ -395,12 +395,12 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 
 	endpoints, err := GetCOSEndpoints()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("GetEndpointsForBucket/GetCOSEndpoint: %s", err)
 	}
 
 	list, err := client.ListBuckets()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("GetEndpointsForBucket/ListBuckets: %s", err)
 	}
 
 	for _, bucket := range list.Buckets {
@@ -468,7 +468,7 @@ func (client *COSClient) ListBuckets() (*BucketList, error) {
 
 	body, err := client.doHTTP("GET", path, nil, 2, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ListBuckets/GET(%s): %s", path, err)
 	}
 
 	// <ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>ad58e4cf-c3f4-49b8-b34a-70a15a416c58</ID><DisplayName>ad58e4cf-c3f4-49b8-b34a-70a15a416c58</DisplayName></Owner><Buckets><Bucket><Name>coligo-test</Name><CreationDate>2020-04-22T15:45:29.201Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>
