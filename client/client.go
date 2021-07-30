@@ -635,13 +635,13 @@ func (client *COSClient) UploadObject(bucket, name string, data []byte) error {
 
 	svcURL, err := client.GetEndpointForBucket(bucket)
 	if err != nil {
-		return err
+		return fmt.Errorf("Getting getting endpoint(%s): %s", bucket, err)
 	}
 
 	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
 
 	_, err = client.doHTTP("PUT", path, data, 1, nil)
-	return err
+	return fmt.Errorf("COS PUT error(%s): %s", path, err)
 }
 
 func (client *COSClient) DeleteObject(bucket, name string) error {
