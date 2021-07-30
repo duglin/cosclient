@@ -307,7 +307,7 @@ func (client *COSClient) GetBucketMetadata(name string) (*BucketMetadata, error)
 
 	body, err := client.doHTTP("GET", path, nil, 1, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GetBucketMetadata/GET(%s): %s", path, err)
 	}
 
 	res := BucketMetadata{}
