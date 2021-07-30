@@ -464,7 +464,7 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 }
 
 func (client *COSClient) ListBuckets() (*BucketList, error) {
-	path := fmt.Sprintf("%s?extended", "https://s3.us.cloud-object-storage.appdomain.cloud")
+	path := fmt.Sprintf("%s", "https://s3.us.cloud-object-storage.appdomain.cloud")
 
 	body, err := client.doHTTP("GET", path, nil, 2, nil)
 	if err != nil {
