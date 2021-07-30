@@ -340,9 +340,12 @@ type COSEndpoints struct {
 }
 
 var Endpoints = (*COSEndpoints)(nil)
+var endpointsMutex = sync.Mutex{}
 
 func GetCOSEndpoints() (*COSEndpoints, error) {
 	Debug(2, "In GetCOSEndpoints\n")
+	endpointsMutex.Lock()
+	defer endpointsMutex.Unlock()
 	if Endpoints != nil {
 		return Endpoints, nil
 	}
@@ -387,7 +390,7 @@ func ToJsonString(obj interface{}) string {
 	return string(buf)
 }
 
-var endpointsMutex = sync.Mutex{}
+var BucketEndpointsMutex = sync.Mutex{}
 
 func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	// cross:  ap-smart
@@ -395,8 +398,8 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	// reg  :  eu-de-standard
 	// reg  :  us-south-smart
 
-	endpointsMutex.Lock()
-	defer endpointsMutex.Unlock()
+	BucketEndpointsMutex.Lock()
+	defer BucketEndpointsMutex.Unlock()
 
 	Debug(2, "Getting endpoints for bucket %q\n", name)
 	if client.Endpoints != nil {
