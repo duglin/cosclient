@@ -387,11 +387,16 @@ func ToJsonString(obj interface{}) string {
 	return string(buf)
 }
 
+var endpointsMutex = sync.Mutex{}
+
 func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	// cross:  ap-smart
 	// cross:  us-standard
 	// reg  :  eu-de-standard
 	// reg  :  us-south-smart
+
+	endpointsMutex.Lock()
+	defer endpointsMutex.Unlock()
 
 	Debug(2, "Getting endpoints for bucket %q\n", name)
 	if client.Endpoints != nil {
