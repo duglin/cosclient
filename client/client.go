@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -32,8 +33,9 @@ type COSClient struct {
 	IAMEndpoint string
 	ID          string
 
-	Token   string
-	Expires time.Time
+	Token        string
+	Expires      time.Time
+	RefreshMutex sync.Mutex
 
 	Endpoints map[string]string // BucketName -> URL
 }
@@ -134,6 +136,13 @@ func NewClient(apikey, id string) (*COSClient, error) {
 }
 
 func (client *COSClient) Refresh() error {
+	client.RefreshMutex.Lock()
+	defer client.RefreshMutex.Unlock()
+
+	if time.Now().Add(refreshTime).Before(client.Expires) {
+		return nil
+	}
+
 	log.Printf("Refreshing COS token")
 	bodyStr := "apikey=" + url.PathEscape(client.APIKey) + "&" +
 		"response_type=cloud_iam&" +
@@ -194,9 +203,8 @@ func (client *COSClient) Refresh() error {
 
 func (client *COSClient) doHTTP(method string, path string, body []byte, num int, headers map[string]string) ([]byte, error) {
 
-	if time.Now().Add(refreshTime).After(client.Expires) {
-		client.Refresh()
-	}
+	// Refresh if needed
+	client.Refresh()
 
 	reader := bytes.NewReader(body)
 	req, err := http.NewRequest(method, path, reader)
