@@ -641,7 +641,10 @@ func (client *COSClient) UploadObject(bucket, name string, data []byte) error {
 	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
 
 	_, err = client.doHTTP("PUT", path, data, 1, nil)
-	return fmt.Errorf("COS PUT error(%s): %s", path, err)
+	if err != nil {
+		err = fmt.Errorf("PUT error(%s): %s", path, err)
+	}
+	return err
 }
 
 func (client *COSClient) DeleteObject(bucket, name string) error {
@@ -649,12 +652,15 @@ func (client *COSClient) DeleteObject(bucket, name string) error {
 
 	svcURL, err := client.GetEndpointForBucket(bucket)
 	if err != nil {
-		return err
+		return fmt.Errorf("Getting getting endpoint(%s): %s", bucket, err)
 	}
 
 	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
 
 	_, err = client.doHTTP("DELETE", path, nil, 1, nil)
+	if err != nil {
+		err = fmt.Errorf("DELETE error(%s): %s", path, err)
+	}
 	return err
 }
 
@@ -663,7 +669,7 @@ func (client *COSClient) DeleteObjects(bucket string, names []string) error {
 
 	svcURL, err := client.GetEndpointForBucket(bucket)
 	if err != nil {
-		return err
+		return fmt.Errorf("Getting getting endpoint(%s): %s", bucket, err)
 	}
 
 	path := fmt.Sprintf("%s/%s?delete", svcURL, bucket)
@@ -680,6 +686,9 @@ func (client *COSClient) DeleteObjects(bucket string, names []string) error {
 	headers["Content-MD5"] = base64.StdEncoding.EncodeToString(sum[:])
 
 	_, err = client.doHTTP("POST", path, []byte(body), 1, headers)
+	if err != nil {
+		err = fmt.Errorf("DELETE/POST error(%s): %s", path, err)
+	}
 	return err
 }
 
@@ -688,7 +697,7 @@ func (client *COSClient) DownloadObject(bucket, name string) ([]byte, error) {
 
 	svcURL, err := client.GetEndpointForBucket(bucket)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Getting getting endpoint(%s): %s", bucket, err)
 	}
 
 	path := fmt.Sprintf("%s/%s/%s", svcURL, bucket, name)
