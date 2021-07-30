@@ -17,11 +17,11 @@ import (
 	"time"
 )
 
-var verbose = 1
+var Verbose = 1
 var refreshTime = time.Minute * 5
 
 func Debug(level int, format string, args ...interface{}) {
-	if level > verbose {
+	if level > Verbose {
 		return
 	}
 	log.Printf(format, args...)
