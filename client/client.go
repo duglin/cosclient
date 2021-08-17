@@ -81,6 +81,7 @@ type BucketList struct {
 type ObjectMetadata struct {
 	Key          string
 	LastModified string
+	ETag         string
 	Size         int
 }
 
@@ -344,6 +345,9 @@ var endpointsMutex = sync.Mutex{}
 
 func GetCOSEndpoints() (*COSEndpoints, error) {
 	Debug(2, "In GetCOSEndpoints\n")
+	if Endpoints != nil {
+		return Endpoints, nil
+	}
 	endpointsMutex.Lock()
 	defer endpointsMutex.Unlock()
 	if Endpoints != nil {
@@ -390,7 +394,7 @@ func ToJsonString(obj interface{}) string {
 	return string(buf)
 }
 
-var BucketEndpointsMutex = sync.Mutex{}
+var BucketEndpointsMutex = sync.RWMutex{}
 
 func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	// cross:  ap-smart
@@ -398,10 +402,21 @@ func (client *COSClient) GetEndpointForBucket(name string) (string, error) {
 	// reg  :  eu-de-standard
 	// reg  :  us-south-smart
 
+	BucketEndpointsMutex.RLock()
+
+	Debug(2, "Getting endpoints for bucket %q\n", name)
+	if client.Endpoints != nil {
+		if url, ok := client.Endpoints[name]; ok {
+			BucketEndpointsMutex.RUnlock()
+			Debug(2, "  -> %s\n", url)
+			return url, nil
+		}
+	}
+	BucketEndpointsMutex.RUnlock()
+
 	BucketEndpointsMutex.Lock()
 	defer BucketEndpointsMutex.Unlock()
 
-	Debug(2, "Getting endpoints for bucket %q\n", name)
 	if client.Endpoints != nil {
 		if url, ok := client.Endpoints[name]; ok {
 			Debug(2, "  -> %s\n", url)
@@ -633,6 +648,7 @@ func (client *COSClient) ListObjects(bucket string) (ObjectList, error) {
 				Key:          obj.Key,
 				LastModified: obj.LastModified,
 				Size:         obj.Size,
+				ETag:         obj.ETag,
 			}
 			res = append(res, newObj)
 		}
