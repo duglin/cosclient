@@ -120,9 +120,15 @@ func NewClient(apikey, id string) (*COSClient, error) {
 		return nil, fmt.Errorf("Missing COS Instance ID")
 	}
 
+	IAMendpoint := "https://iam.cloud.ibm.com/identity/token"
+	if strings.Contains(":staging:") {
+		// For testing purposes
+		IAMendpoint = "iam.test.cloud.ibm.com"
+	}
+
 	client := &COSClient{
 		APIKey:      apikey,
-		IAMEndpoint: "https://iam.cloud.ibm.com/identity/token",
+		IAMEndpoint: IAMendpoint,
 		ID:          id,
 
 		Token:   "",
