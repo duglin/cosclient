@@ -121,7 +121,7 @@ func NewClient(apikey, id string) (*COSClient, error) {
 	}
 
 	IAMendpoint := "https://iam.cloud.ibm.com/identity/token"
-	if strings.Contains(":staging:") {
+	if strings.Contains(id, ":staging:") {
 		// For testing purposes
 		IAMendpoint = "iam.test.cloud.ibm.com"
 	}
